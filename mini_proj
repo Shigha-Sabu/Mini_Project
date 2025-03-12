@@ -1,0 +1,130 @@
+#include <Arduino.h>
+#include <WiFi.h>              
+#include <Firebase_ESP_Client.h>
+#include "addons/TokenHelper.h"
+#include "addons/RTDBHelper.h"
+#include <TinyGPS++.h>
+#include <Adafruit_MPU6050.h>
+#include <math.h>
+
+Adafruit_MPU6050 mpu;
+TinyGPSPlus gps;
+
+float prevAccelMag = 0;
+float prevGyroMag = 0;
+float prevTrunkAngle = 0;
+bool isFalling = false;
+unsigned long lastFallTime = 0;
+const unsigned long fallTimeout = 2000;
+const int ledPin = 2;
+
+#define WIFI_SSID "JioFiber-EaSqL"
+#define WIFI_PASSWORD "XaeR3dooWooy7caa"
+#define API_KEY "AIzaSyAkEOxREu8pOcGxlloD8HwNKC30MwtGXaI"
+#define DATABASE_URL "https://afd1-2ba0a-default-rtdb.europe-west1.firebasedatabase.app/"
+#define GPS_BAUDRATE 9600
+
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+unsigned long sendDataPrevMillis = 0;
+int count = 0;
+bool signupOK = false;
+
+void setup()
+{
+  Serial.begin(115200);
+  Serial.begin(9600);
+  Serial2.begin(GPS_BAUDRATE);  
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);  
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED){
+    Serial.print(".");
+    delay(300);
+  }
+  while (!Serial) delay(10);
+  if (!mpu.begin()) while (1) delay(10);
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  pinMode(ledPin, OUTPUT);
+  config.api_key = API_KEY;
+  config.database_url = DATABASE_URL;
+  if (Firebase.signUp(&config, &auth, "", "")){
+    Serial.println("ok");    
+    signupOK = true;
+  }
+  else{
+    Serial.printf("%s\n", config.signer.signupError.message.c_str());  
+  }
+  config.token_status_callback = tokenStatusCallback; 
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+}
+void loop()
+{
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+  float accelMag = sqrt(a.acceleration.x * a.acceleration.x +
+                        a.acceleration.y * a.acceleration.y +
+                        a.acceleration.z * a.acceleration.z);
+
+  float gyroMag = sqrt(g.gyro.x * g.gyro.x +
+                       g.gyro.y * g.gyro.y +
+                       g.gyro.z * g.gyro.z);
+
+  float trunkAngle = atan2(a.acceleration.x, sqrt(a.acceleration.y * a.acceleration.y + a.acceleration.z * a.acceleration.z));
+if ((gyroMag > 3.1 && accelMag > 9) && gyroMag > 0.05 && abs(trunkAngle - prevTrunkAngle) > 0.59) {
+    isFalling = true;
+    lastFallTime = millis();
+}
+  prevAccelMag = accelMag;
+  prevGyroMag = gyroMag;
+  prevTrunkAngle = trunkAngle;
+    if (isFalling==true)
+    {
+      digitalWrite(ledPin,HIGH);
+      delay(3000);
+      digitalWrite(ledPin,LOW);
+    if (Serial2.available() > 0) {
+      if (gps.encode(Serial2.read())) {
+        if (gps.location.isValid()) {
+        Serial.print(F("- latitude: "));
+        Serial.println(gps.location.lat());
+        Serial.print(F("- longitude: "));
+        Serial.println(gps.location.lng());
+        }
+        else {
+        Serial.println(F("- location: INVALID"));
+      }
+      Serial.println();
+    }
+  }
+
+  if (millis() > 5000 && gps.charsProcessed() < 10){
+     Serial.println(F("No GPS data received: check wiring"));
+  }
+  if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 5000 || sendDataPrevMillis == 0)){
+    sendDataPrevMillis = millis();
+    // Print the generated URL for debugging (optional)
+    if (Firebase.RTDB.setFloat(&fbdo, "latitude", gps.location.lat())){
+      Serial.println(F("PASSED"));
+      Serial.println("PATH: " + fbdo.dataPath());
+      Serial.println("TYPE: " + fbdo.dataType());
+    }
+    count++;
+    if (Firebase.RTDB.setFloat(&fbdo, "longitude", gps.location.lng())){
+      Serial.println(F("PASSED"));
+      Serial.println("PATH: " + fbdo.dataPath());
+      Serial.println("TYPE: " + fbdo.dataType());
+    }
+     if (Firebase.RTDB.setBool(&fbdo, "flag",isFalling)){
+      Serial.println(F("PASSED"));
+      Serial.println("PATH: " + fbdo.dataPath());
+      Serial.println("TYPE: " + fbdo.dataType());
+      isFalling=false;
+    }
+  }
+  }
+}
